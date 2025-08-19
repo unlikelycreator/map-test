@@ -59,7 +59,6 @@
 //     // Clean up (optional)
 //   });
 // });
-
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -79,11 +78,14 @@ admin.initializeApp({
 
 // In-memory storage: userId -> { fcmToken, location: { lat, lng } }
 const users = new Map();
-const ROOM = 'sos-room'; // Shared room for demo
+const ROOM = 'sos-room';
 
-// Function to emit the list of connected users
+// Function to emit the list of connected users with their locations
 const broadcastConnectedUsers = () => {
-  const connectedUsers = Array.from(users.keys());
+  const connectedUsers = Array.from(users.entries()).map(([userId, data]) => ({
+    userId,
+    location: data.location || null,
+  }));
   io.to(ROOM).emit('connectedUsers', connectedUsers);
 };
 
@@ -94,7 +96,7 @@ io.on('connection', (socket) => {
   socket.on('join', ({ userId, fcmToken }) => {
     socket.join(ROOM);
     users.set(userId, { fcmToken, location: null });
-    console.log(`User ${userId} joined with FCM: ${fcmToken}`);
+    console.log(`User ${userId} joined with location: ${JSON.stringify(users.get(userId).location)}`);
     // Broadcast updated user list
     broadcastConnectedUsers();
   });
@@ -102,9 +104,11 @@ io.on('connection', (socket) => {
   // Receive location update from user
   socket.on('updateLocation', ({ userId, lat, lng }) => {
     if (users.has(userId)) {
-      users.set(userId, { ...users.get(userId), location: { lat, lng } });
+      users.set(userId, { ...users.get(userId), location: lat && lng ? { lat, lng } : null });
       // Broadcast to room (other users)
       socket.to(ROOM).emit('locationUpdate', { userId, lat, lng });
+      // Update connected users list
+      broadcastConnectedUsers();
     }
   });
 
@@ -128,7 +132,7 @@ io.on('connection', (socket) => {
     console.log('User disconnected:', socket.id);
     // Find and remove the user by socket ID
     users.forEach((value, userId) => {
-      if (socket.id === socket.id) { // This check is simplified; you may need to track socket IDs explicitly
+      if (socket.id === socket.id) { // Simplified; track socket IDs explicitly if needed
         users.delete(userId);
       }
     });
@@ -138,4 +142,3 @@ io.on('connection', (socket) => {
 });
 
 server.listen(8098, () => console.log('Server running on port 8098'));
-// server.listen(10000, () => console.log('Server running on port 10000'));
