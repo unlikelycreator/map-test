@@ -59,6 +59,7 @@
 //     // Clean up (optional)
 //   });
 // });
+
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -76,7 +77,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-// In-memory storage: userId -> { fcmToken, location: { lat, lng } }
+// In-memory storage: userId -> { fcmToken, location: { lat, lng }, socketId }
 const users = new Map();
 const ROOM = 'sos-room';
 
@@ -92,10 +93,14 @@ const broadcastConnectedUsers = () => {
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-  // User joins with their userId and FCM token
-  socket.on('join', ({ userId, fcmToken }) => {
+  // User joins with their userId, FCM token, and initial location
+  socket.on('join', ({ userId, fcmToken, lat, lng }) => {
     socket.join(ROOM);
-    users.set(userId, { fcmToken, location: null });
+    users.set(userId, { 
+      fcmToken, 
+      location: lat && lng ? { lat, lng } : null, 
+      socketId: socket.id 
+    });
     console.log(`User ${userId} joined with location: ${JSON.stringify(users.get(userId).location)}`);
     // Broadcast updated user list
     broadcastConnectedUsers();
@@ -104,7 +109,10 @@ io.on('connection', (socket) => {
   // Receive location update from user
   socket.on('updateLocation', ({ userId, lat, lng }) => {
     if (users.has(userId)) {
-      users.set(userId, { ...users.get(userId), location: lat && lng ? { lat, lng } : null });
+      users.set(userId, { 
+        ...users.get(userId), 
+        location: lat && lng ? { lat, lng } : null 
+      });
       // Broadcast to room (other users)
       socket.to(ROOM).emit('locationUpdate', { userId, lat, lng });
       // Update connected users list
@@ -130,9 +138,9 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-    // Find and remove the user by socket ID
+    // Remove user by socketId
     users.forEach((value, userId) => {
-      if (socket.id === socket.id) { // Simplified; track socket IDs explicitly if needed
+      if (value.socketId === socket.id) {
         users.delete(userId);
       }
     });
