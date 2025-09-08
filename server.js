@@ -1,152 +1,76 @@
-// const express = require('express');
-// const http = require('http');
-// const socketIo = require('socket.io');
-// const admin = require('firebase-admin');
-
-// const app = express();
-// const server = http.createServer(app);
-// const io = socketIo(server, {
-//   cors: { origin: '*' } // Allow from React Native app
-// });
-
-// // Initialize Firebase Admin
-// const serviceAccount = require('./serviceAccountKey.json'); // Your Firebase service account key
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-// });
-
-// // In-memory storage: userId -> { fcmToken, location: { lat, lng } }
-// const users = new Map();
-// const ROOM = 'sos-room'; // Shared room for 2 users demo
-
-// io.on('connection', (socket) => {
-//   console.log('User connected:', socket.id);
-
-//   // User joins with their userId and FCM token
-//   socket.on('join', ({ userId, fcmToken }) => {
-//     socket.join(ROOM);
-//     users.set(userId, { fcmToken, location: null });
-//     console.log(`User ${userId} joined with FCM: ${fcmToken}`);
-//   });
-
-//   // Receive location update from user
-//   socket.on('updateLocation', ({ userId, lat, lng }) => {
-//     if (users.has(userId)) {
-//       users.set(userId, { ...users.get(userId), location: { lat, lng } });
-//       // Broadcast to room (other users)
-//       socket.to(ROOM).emit('locationUpdate', { userId, lat, lng });
-//     }
-//   });
-
-//   // SOS activated: Send push to other users
-//   socket.on('sosActivated', ({ userId }) => {
-//     users.forEach((userData, otherUserId) => {
-//       if (otherUserId !== userId && userData.fcmToken) {
-//         admin.messaging().send({
-//           token: userData.fcmToken,
-//           notification: {
-//             title: 'SOS Alert!',
-//             body: `User ${userId} needs help! Their location is being shared live.`,
-//           },
-//         }).then(() => console.log(`Push sent to ${otherUserId}`))
-//           .catch(err => console.error('Push error:', err));
-//       }
-//     });
-//   });
-
-//   socket.on('disconnect', () => {
-//     console.log('User disconnected:', socket.id);
-//     // Clean up (optional)
-//   });
-// });
-
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const admin = require('firebase-admin');
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import mongoose from 'mongoose';
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: { origin: '*' } // Allow from React Native app
+const server = createServer(app);
+const io = new Server(server, { cors: { origin: '*' } }); // Adjust CORS for your React Native app
+
+mongoose.connect('mongodb://localhost:27017/sosApp', { useNewUrlParser: true, useUnifiedTopology: true });
+
+// SOS Model
+const sosSchema = new mongoose.Schema({
+  userId: String,
+  location: { lat: Number, lng: Number },
+  isActive: { type: Boolean, default: true },
+  updatedAt: { type: Date, default: Date.now }
+});
+const ActiveSOS = mongoose.model('ActiveSOS', sosSchema);
+
+app.use(express.json());
+
+// API to trigger SOS
+app.post('/sos', async (req, res) => {
+  const { userId, lat, lng } = req.body;
+  const sos = await ActiveSOS.findOneAndUpdate(
+    { userId },
+    { location: { lat, lng }, updatedAt: Date.now(), isActive: true },
+    { upsert: true, new: true }
+  );
+  io.emit('new-sos', sos); // Broadcast to all connected clients
+  res.status(200).json({ message: 'SOS sent' });
 });
 
-// Initialize Firebase Admin
-const serviceAccount = require('./serviceAccountKey.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+// API to update location
+app.post('/update-location', async (req, res) => {
+  const { userId, lat, lng } = req.body;
+  const sos = await ActiveSOS.findOneAndUpdate(
+    { userId, isActive: true },
+    { location: { lat, lng }, updatedAt: Date.now() }
+  );
+  if (sos) {
+    io.emit('sos-update', { userId, lat, lng }); // Broadcast update
+  }
+  res.status(200).json({ message: 'Location updated' });
 });
 
-// In-memory storage: userId -> { fcmToken, location: { lat, lng }, socketId }
-const users = new Map();
-const ROOM = 'sos-room';
+// API to cancel SOS
+app.post('/cancel-sos', async (req, res) => {
+  const { userId } = req.body;
+  const sos = await ActiveSOS.findOneAndUpdate(
+    { userId, isActive: true },
+    { isActive: false },
+    { new: true }
+  );
+  if (sos) {
+    io.emit('sos-removed', { userId }); // Broadcast removal
+    res.status(200).json({ message: 'SOS canceled' });
+  } else {
+    res.status(404).json({ message: 'No active SOS found' });
+  }
+});
 
-// Function to emit the list of connected users with their locations
-const broadcastConnectedUsers = () => {
-  const connectedUsers = Array.from(users.entries()).map(([userId, data]) => ({
-    userId,
-    location: data.location || null,
-  }));
-  io.to(ROOM).emit('connectedUsers', connectedUsers);
-};
+// API to get active SOS
+app.get('/active-sos', async (req, res) => {
+  const active = await ActiveSOS.find({ isActive: true });
+  res.json(active);
+});
 
+// Socket connection
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
-  // User joins with their userId, FCM token, and initial location
-  socket.on('join', ({ userId, fcmToken, lat, lng }) => {
-    socket.join(ROOM);
-    users.set(userId, { 
-      fcmToken, 
-      location: lat && lng ? { lat, lng } : null, 
-      socketId: socket.id 
-    });
-    console.log(`User ${userId} joined with location: ${JSON.stringify(users.get(userId).location)}`);
-    // Broadcast updated user list
-    broadcastConnectedUsers();
-  });
-
-  // Receive location update from user
-  socket.on('updateLocation', ({ userId, lat, lng }) => {
-    if (users.has(userId)) {
-      users.set(userId, { 
-        ...users.get(userId), 
-        location: lat && lng ? { lat, lng } : null 
-      });
-      // Broadcast to room (other users)
-      socket.to(ROOM).emit('locationUpdate', { userId, lat, lng });
-      // Update connected users list
-      broadcastConnectedUsers();
-    }
-  });
-
-  // SOS activated: Send push to other users
-  socket.on('sosActivated', ({ userId }) => {
-    users.forEach((userData, otherUserId) => {
-      if (otherUserId !== userId && userData.fcmToken) {
-        admin.messaging().send({
-          token: userData.fcmToken,
-          notification: {
-            title: 'SOS Alert!',
-            body: `User ${userId} needs help! Their location is being shared live.`,
-          },
-        }).then(() => console.log(`Push sent to ${otherUserId}`))
-          .catch(err => console.error('Push error:', err));
-      }
-    });
-  });
-
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    // Remove user by socketId
-    users.forEach((value, userId) => {
-      if (value.socketId === socket.id) {
-        users.delete(userId);
-      }
-    });
-    // Broadcast updated user list
-    broadcastConnectedUsers();
-  });
+  console.log('User connected');
+  socket.on('disconnect', () => console.log('User disconnected'));
 });
 
-server.listen(8098, () => console.log('Server running on port 8098'));
+server.listen(10000, () => console.log('Server running on port 10000'));
