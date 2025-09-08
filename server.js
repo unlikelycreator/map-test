@@ -7,7 +7,10 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, { cors: { origin: '*' } }); // Adjust CORS for your React Native app
 
-mongoose.connect('mongodb://localhost:27017/sosApp', { useNewUrlParser: true, useUnifiedTopology: true });
+mongoose.connect('mongodb://localhost:27017/sosApp')
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
 
 // SOS Model
 const sosSchema = new mongoose.Schema({
